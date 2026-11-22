@@ -1,0 +1,9 @@
+output.jsonl
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+.DS_Store
+
+.sqlglot-ref/
+.work/
