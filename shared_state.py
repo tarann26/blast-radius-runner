@@ -32,9 +32,47 @@ def flagged_files(patch_text: str) -> set[str]:
     out.update((f for f, (old, new) in copies.items() if new < old))
     return out
 
+ANN = re.compile('^([-+])\\s+([A-Za-z_]\\w*)\\s*:\\s*[^=]+=')
+PLAIN = re.compile('^([-+])\\s+([A-Za-z_]\\w*)\\s*=(?!=)')
+
+def annotation_edit(patch_text: str) -> bool:
+    seen = {'-ann': set(), '+ann': set(), '-plain': set(), '+plain': set()}
+    for line in patch_text.split('\n'):
+        if line.startswith(('+++', '---')):
+            continue
+        m = ANN.match(line)
+        if m:
+            seen[m.group(1) + 'ann'].add(m.group(2))
+            continue
+        m = PLAIN.match(line)
+        if m:
+            seen[m.group(1) + 'plain'].add(m.group(2))
+    return bool(seen['-ann'] & seen['+plain'] or seen['+ann'] & seen['-plain'])
+
+MODULE_SKIP = re.compile('^(?:def |class |async def |@|import |from |#|"""|\'\'\'|\\)|\\]|\\}|pass\\s*$|if (?:t\\.)?TYPE_CHECKING|$)')
+
+def module_level_edit(patch_text: str) -> bool:
+    current = None
+    for line in patch_text.split('\n'):
+        if line.startswith('+++ '):
+            path = line[4:].strip()
+            current = path[2:] if path.startswith('b/') else path
+            continue
+        if line.startswith('--- ') or current is None:
+            continue
+        if not (current.startswith('sqlglot/') and current.endswith('.py')):
+            continue
+        if line[:1] in '+-':
+            body = line[1:]
+            if body and (not body[0].isspace()) and (not MODULE_SKIP.match(body)):
+                return True
+    return False
+
 def extra_tests(patch_text: str, candidates, num_to_test: dict) -> set[int]:
     files = flagged_files(patch_text)
     if not files:
+        if annotation_edit(patch_text) or module_level_edit(patch_text):
+            return set(candidates or ())
         return set()
     extra = set(candidates or ())
     if any((f.startswith(DIALECT_CODE) for f in files)):
