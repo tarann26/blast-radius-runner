@@ -31,7 +31,6 @@ def flagged_files(patch_text: str) -> set[str]:
             copies.setdefault(current, [0, 0])[0] += len(COPY.findall(line[1:]))
     out.update((f for f, (old, new) in copies.items() if new < old))
     return out
-
 ANN = re.compile('^([-+])\\s+([A-Za-z_]\\w*)\\s*:\\s*[^=]+=')
 PLAIN = re.compile('^([-+])\\s+([A-Za-z_]\\w*)\\s*=(?!=)')
 
@@ -48,7 +47,6 @@ def annotation_edit(patch_text: str) -> bool:
         if m:
             seen[m.group(1) + 'plain'].add(m.group(2))
     return bool(seen['-ann'] & seen['+plain'] or seen['+ann'] & seen['-plain'])
-
 MODULE_SKIP = re.compile('^(?:def |class |async def |@|import |from |#|"""|\'\'\'|\\)|\\]|\\}|pass\\s*$|if (?:t\\.)?TYPE_CHECKING|$)')
 
 def module_level_edit(patch_text: str) -> bool:

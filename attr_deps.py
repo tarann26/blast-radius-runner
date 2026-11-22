@@ -1,5 +1,4 @@
-"""Dependency index built at image build time from the pinned sqlglot: which tests read which
-class attributes, transform tables, dict keys, methods and module-level functions."""
+"""Dependency index built at image build time from the pinned sqlglot."""
 from __future__ import annotations
 import ast
 import marshal

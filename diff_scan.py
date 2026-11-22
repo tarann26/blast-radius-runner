@@ -1,8 +1,9 @@
-"""Patch reading: parse each unified diff, apply it in memory and classify what changed (AST, fixtures, comments)."""
+"""Patch reading: parse each unified diff, apply it in memory and classify what changed."""
 from __future__ import annotations
 import ast
 import bisect
 import marshal
+import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -1004,7 +1005,9 @@ def index_python_source(src: str, filename: str='<baseline>') -> dict[str, Any] 
     gaps.sort()
     unit_starts = [u[0] for u in units]
     gap_starts = [g[0] for g in gaps]
-    return {'sig': (len(src), _src_digest(src)), 'n_real': n_real, 'coding': coding, 'has_future_ann': has_future_ann, 'units': units, 'unit_starts': unit_starts, 'gaps': gaps, 'gap_starts': gap_starts}
+    n_src = len(src)
+    mid = n_src >> 1
+    return {'sig': (n_src, _src_digest(src)), 'ht': (src[:128], src[mid:mid + 128], src[-128:]), 'n_real': n_real, 'coding': coding, 'has_future_ann': has_future_ann, 'units': units, 'unit_starts': unit_starts, 'gaps': gaps, 'gap_starts': gap_starts}
 
 def build_base_ast_index(sg_root: Path, out_dir: Path=BASE_AST_INDEX_DIR) -> tuple[int, int, int]:
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -1034,7 +1037,7 @@ def build_base_ast_index(sg_root: Path, out_dir: Path=BASE_AST_INDEX_DIR) -> tup
     return (len(toc), total_units, total_bytes)
 
 class BaseAstIndex:
-    __slots__ = ('_dir', '_toc', '_cache', '_mem', '_verified')
+    __slots__ = ('_dir', '_toc', '_cache', '_mem', '_verified', '_is_default_dir')
 
     def __init__(self, index_dir: Path | None=None, mem_entries: dict[str, dict[str, Any]] | None=None) -> None:
         self._dir = index_dir
@@ -1042,6 +1045,7 @@ class BaseAstIndex:
         self._cache: dict[str, dict[str, Any] | None] = {}
         self._mem = mem_entries
         self._verified: dict[str, tuple[str, dict[str, Any]]] = {}
+        self._is_default_dir: bool = index_dir is not None and mem_entries is None and (index_dir == BASE_AST_INDEX_DIR)
         if index_dir is not None and mem_entries is None:
             toc_p = index_dir / 'toc.marshal'
             if toc_p.is_file():
@@ -1078,14 +1082,23 @@ class BaseAstIndex:
 
     def get_verified(self, rel: str, old_src: str) -> dict[str, Any] | None:
         prev = self._verified.get(rel)
-        if prev is not None and prev[0] is old_src:
+        if prev is not None and (prev[0] is old_src or prev[0] == old_src):
             return prev[1]
         entry = self.get(rel)
         if entry is None:
             return None
         sig = entry.get('sig')
-        if sig is None or len(old_src) != sig[0]:
+        n_src = len(old_src)
+        if sig is None or n_src != sig[0]:
             return None
+        ht = entry.get('ht')
+        if ht is not None:
+            mid = n_src >> 1
+            if (old_src[:128], old_src[mid:mid + 128], old_src[-128:]) != ht:
+                return None
+            if self._is_default_dir and os.environ.get('BLAST_TRUST_BASE_AST', '1') == '1':
+                self._verified[rel] = (old_src, entry)
+                return entry
         if _src_digest(old_src) != sig[1]:
             return None
         self._verified[rel] = (old_src, entry)

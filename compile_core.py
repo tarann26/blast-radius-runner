@@ -1,5 +1,4 @@
-"""Image build step: compile sqlglot's core modules to C with mypyc in three variants, so the
-selector can run tests fast on commits that leave those modules untouched."""
+"""Image build step: compile sqlglot's core modules to C with mypyc in three variants."""
 from __future__ import annotations
 import ast
 import concurrent.futures

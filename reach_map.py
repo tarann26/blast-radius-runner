@@ -1,5 +1,4 @@
-"""Candidate selection: map each changed line, attribute, fixture and test file to the tests that
-can reach it, and plan how each commit is checked."""
+"""Candidate selection: map each change to the tests that can reach it and plan each commit."""
 from __future__ import annotations
 import ast
 import bisect
@@ -1315,6 +1314,66 @@ class ReachPlanner:
                             for tag in has_sub.get(mnum, ()):
                                 self._add_subtest_filter(subtest_filters, mnum, tag, None)
                         return
+                elif rel == 'tests/helpers.py' and len(parts) == 1 and (not unit.sig_changed):
+                    htree = self._parse_base_ast(rel)
+                    fn_h = parts[0]
+                    if htree is not None and fn_h:
+                        top_defs: dict[str, ast.AST] = {}
+                        top_level_safe = True
+                        for _st in htree.body:
+                            if isinstance(_st, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                                top_defs[_st.name] = _st
+                                for _dec in _st.decorator_list:
+                                    if any((isinstance(_n, ast.Name) and _n.id == fn_h or (isinstance(_n, ast.Attribute) and _n.attr == fn_h) for _n in ast.walk(_dec))):
+                                        top_level_safe = False
+                                if isinstance(_st, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                                    for _df in list(_st.args.defaults) + [d for d in _st.args.kw_defaults if d is not None]:
+                                        if any((isinstance(_n, ast.Name) and _n.id == fn_h or (isinstance(_n, ast.Attribute) and _n.attr == fn_h) for _n in ast.walk(_df))):
+                                            top_level_safe = False
+                            elif not isinstance(_st, (ast.Import, ast.ImportFrom)):
+                                if any((isinstance(_n, ast.Name) and _n.id == fn_h or (isinstance(_n, ast.Attribute) and _n.attr == fn_h) for _n in ast.walk(_st))):
+                                    top_level_safe = False
+                        if top_level_safe and fn_h in top_defs:
+                            reach_h: set[str] = {fn_h}
+                            changed_r = True
+                            while changed_r:
+                                changed_r = False
+                                for _dn, _dnode in top_defs.items():
+                                    if _dn in reach_h:
+                                        continue
+                                    for _n in ast.walk(_dnode):
+                                        if isinstance(_n, ast.Name) and _n.id in reach_h or (isinstance(_n, ast.Attribute) and _n.attr in reach_h):
+                                            reach_h.add(_dn)
+                                            changed_r = True
+                                            break
+                            for _st in htree.body:
+                                if not isinstance(_st, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Import, ast.ImportFrom)):
+                                    if any((isinstance(_n, ast.Name) and _n.id in reach_h or (isinstance(_n, ast.Attribute) and _n.attr in reach_h) for _n in ast.walk(_st))):
+                                        top_level_safe = False
+                                        break
+                            if top_level_safe:
+                                line_h = self._tests_covering_lines(rel, unit.old_lines or unit.enclosing_lines)
+                                seed_tfs: set[str] = {self.num_to_test[r]['file'] for r in line_h}
+                                for imp_tf in self.maps['import_file_to_test_files'].get(rel, []):
+                                    txt_tf = self._read_base_file(imp_tf)
+                                    if any((nm in txt_tf for nm in reach_h)) or 'import *' in txt_tf or ('getattr(' in txt_tf and 'helpers' in txt_tf):
+                                        seed_tfs.add(imp_tf)
+                                if seed_tfs:
+                                    q_tf = list(seed_tfs)
+                                    while q_tf:
+                                        cur_tf = q_tf.pop()
+                                        for nxt_tf in self.maps['import_file_to_test_files'].get(cur_tf, []):
+                                            if nxt_tf not in seed_tfs:
+                                                seed_tfs.add(nxt_tf)
+                                                q_tf.append(nxt_tf)
+                                    affected_h = set(line_h)
+                                    for tf_h in seed_tfs:
+                                        affected_h.update(self.file_to_test_nums.get(tf_h, []))
+                                    candidates.update(affected_h)
+                                    for rnum in affected_h:
+                                        for tag in has_sub.get(rnum, ()):
+                                            self._add_subtest_filter(subtest_filters, rnum, tag, None)
+                                    return
             affected = set(self.file_to_test_nums.get(rel, []))
             for tf in self.maps['import_file_to_test_files'].get(rel, []):
                 affected.update(self.file_to_test_nums.get(tf, []))
@@ -2043,7 +2102,28 @@ class ReachPlanner:
                 py_analyses[rel] = ana
                 if rel.startswith(('sqlglot/executor/', 'sqlglot/planner.py', 'sqlglot/optimizer/annotate_types.py', 'sqlglot/typing/', 'sqlglot/generators/python.py', 'sqlglot/generator.py', 'sqlglot/optimizer/scope.py', 'sqlglot/optimizer/eliminate_joins.py', 'tests/test_executor.py', 'tests/helpers.py')) or (rel == 'sqlglot/dialects/dialect.py' and any((u.symbol_name in ('*', 'EXPRESSION_METADATA', 'COERCES_TO', 'DEFAULT_NULL_TYPE', 'PRIORITIZE_NON_LITERAL_TYPES', 'SUPPORTS_NULL_TYPE') for u in ana.units))):
                     exec_engine_touched = True
-                if rel == 'tests/test_parser.py' and any(('test_max_nodes' in fn for fn in ana.changed_funcs)) or rel in ('sqlglot/tokens.py', 'sqlglot/tokenizer_core.py') or (rel == 'sqlglot/parser.py' and (any((fn in ('Parser.expression', 'Parser.__init__', 'Parser._reset', 'Parser.parse') for fn in ana.changed_funcs)) or any((u.kind == 'module_other' for u in ana.units)))) or any((hl.startswith(('+', '-')) and (not hl[1:].lstrip().startswith('#')) and ('max_nodes' in hl.lower() or '_node_count' in hl or '1_000_000' in hl or ('1000000' in hl)) for h in fp.hunks for hl in h.lines)):
+                _tokens_needs_max_nodes = False
+                if rel == 'sqlglot/tokens.py':
+                    if ana.syntax_error or fp.is_deleted or (not ana.units):
+                        _tokens_needs_max_nodes = True
+                    else:
+                        _MAX_NODES_TOK_KEYS = frozenset({'SELECT', 'FROM', 'X', 'T', '=', ','})
+                        for _u in ana.units:
+                            if not (_u.kind in ('dict_key', 'dict_lambda_body') and _u.class_name == 'Tokenizer' and (_u.symbol_name == 'KEYWORDS') and (_u.dict_keys is not None)):
+                                _tokens_needs_max_nodes = True
+                                break
+                            for _kr in _u.dict_keys:
+                                _s = _kr.strip()
+                                if len(_s) < 2 or _s[0] != _s[-1] or _s[0] not in ("'", '"'):
+                                    _tokens_needs_max_nodes = True
+                                    break
+                                _ku = _s[1:-1].upper()
+                                if _ku in _MAX_NODES_TOK_KEYS or _ku.startswith('COL') or (not _ku.isidentifier()):
+                                    _tokens_needs_max_nodes = True
+                                    break
+                            if _tokens_needs_max_nodes:
+                                break
+                if rel == 'tests/test_parser.py' and any(('test_max_nodes' in fn for fn in ana.changed_funcs)) or rel == 'sqlglot/tokenizer_core.py' or _tokens_needs_max_nodes or (rel == 'sqlglot/parser.py' and (any((fn in ('Parser.expression', 'Parser.__init__', 'Parser._reset', 'Parser.parse') for fn in ana.changed_funcs)) or any((u.kind == 'module_other' for u in ana.units)))) or any((hl.startswith(('+', '-')) and (not hl[1:].lstrip().startswith('#')) and ('max_nodes' in hl.lower() or '_node_count' in hl or '1_000_000' in hl or ('1000000' in hl)) for h in fp.hunks for hl in h.lines)):
                     has_max_nodes_edit = True
                 if ana.syntax_error:
                     has_syntax_error = True
@@ -2084,9 +2164,9 @@ class ReachPlanner:
                         tpch_fixture_touched = True
                     if not err_or_shift and (not fp.is_deleted):
                         if rel == 'tests/fixtures/optimizer/tpc-h/tpc-h.sql':
-                            f_hits = {r for r in f_hits if not self.num_to_test[r]['id'].endswith('::test_execute_tpcds')}
+                            f_hits = {r for r in f_hits if self.num_to_test[r]['file'] != 'tests/test_executor.py' or self.num_to_test[r]['id'].endswith(('::test_execute_tpch', '::test_optimized_tpch'))}
                         elif rel == 'tests/fixtures/optimizer/tpc-ds/tpc-ds.sql':
-                            f_hits = {r for r in f_hits if not self.num_to_test[r]['id'].endswith(('::test_execute_tpch', '::test_optimized_tpch'))}
+                            f_hits = {r for r in f_hits if self.num_to_test[r]['file'] != 'tests/test_executor.py' or self.num_to_test[r]['id'].endswith('::test_execute_tpcds')}
                     candidates.update(f_hits)
                     for rnum in f_hits:
                         tags = self._subtest_tags_by_num.get(rnum, [])

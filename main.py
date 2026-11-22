@@ -1,5 +1,4 @@
-"""Blast Radius selector entry point: read the patches, plan each commit, verify the candidates
-by running them, then pack the chosen tests onto workers and print one JSON line per commit."""
+"""Blast Radius selector entry point: read, plan, verify, guard, pack and print one JSON line per commit."""
 from __future__ import annotations
 import json
 import marshal
@@ -76,5 +75,7 @@ def main() -> None:
     for p in plans:
         grp_counts[p.group] = grp_counts.get(p.group, 0) + 1
     print(f'[blast] commits={len(plans)} groups={grp_counts} sim={total_sim_ms / 1000:.3f}s wall={t_end - t0:.3f}s (load={t_load - t0:.3f}s plan={t_plan - t_load:.3f}s verify={t_verify - t_plan:.3f}s)', file=sys.stderr)
+    sys.stderr.flush()
+    os._exit(0)
 if __name__ == '__main__':
     main()

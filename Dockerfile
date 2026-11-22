@@ -1,11 +1,7 @@
 # syntax=docker/dockerfile:1
 # Two-stage linux/amd64 image on Python 3.13.
-# Build stage: fetch sqlglot at the pinned commit and compile three C variants of its core with mypyc
-#   /sqlglot-c        core, expressions, table and the hot optimizer passes
-#   /sqlglot-c-noopt  core, expressions and table (optimizer left in Python)
-#   /sqlglot-c-base   core and expressions only
-#   /sqlglot          the plain Python tree, for commits that touch compiled modules
-# Run stage: the selector, its maps and the caches precomputed below.
+# Build stage: fetch sqlglot at the pinned commit and compile three C variants of its core with mypyc.
+# Run stage: the selector, its maps and the caches precomputed from the pinned commit.
 FROM python:3.13-slim@sha256:e48f59cdba69a3cbd9ed2cf0f348d90d45a8d350d98134cf1070bc106ee9ed90 AS builder
 
 RUN apt-get update -qq && \
@@ -20,7 +16,6 @@ RUN pip install --no-cache-dir \
     types-python-dateutil \
     types-pytz
 
-# sqlglot at the pinned commit, from its own repository
 RUN python -c "import tarfile, urllib.request, io; \
     url = 'https://github.com/tobymao/sqlglot/archive/eb11aec4be8cb2122afe713a4816662c3f0fb2fa.tar.gz'; \
     data = urllib.request.urlopen(url, timeout=120).read(); \
@@ -45,7 +40,6 @@ RUN PY_INC=$(python -c "import sysconfig; print(sysconfig.get_path('include'))")
     clang -O3 -g0 -fno-semantic-interposition -fno-asynchronous-unwind-tables -fPIC -shared -Wl,-s -I"$PY_INC" /tmp/_joinkit.c -o "/opt/_joinkit${EXT}" && \
     rm -f /tmp/_joinkit.c
 
-# Run stage: no compiler, no mypy
 FROM python:3.13-slim@sha256:e48f59cdba69a3cbd9ed2cf0f348d90d45a8d350d98134cf1070bc106ee9ed90
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -63,7 +57,6 @@ RUN pip install --no-cache-dir --no-deps \
     pandas==3.1.1 \
     duckdb==2.0.0
 
-# Bytecode for the standard library, so no run pays to compile it
 RUN python -m compileall -q -j 0 /usr/local/lib/python3.13 > /dev/null || true
 
 COPY --from=builder /sqlglot /sqlglot
@@ -76,7 +69,6 @@ COPY --from=builder /opt/_joinkit*.so /app/
 COPY worker_pack.py diff_scan.py attr_deps.py reach_map.py stage_store.py verifier.py main.py shared_state.py prebuild.py /app/
 COPY maps /app/maps
 
-# Caches, dependency index and bytecode, all built from the pinned commit
 RUN python /app/prebuild.py && \
     python -m compileall -q -j 0 /sqlglot/sqlglot /sqlglot/tests /sqlglot-c/sqlglot /sqlglot-c/tests /sqlglot-c-noopt/sqlglot /sqlglot-c-noopt/tests /sqlglot-c-base/sqlglot /sqlglot-c-base/tests /app && \
     chmod -R a+rX /app /sqlglot /sqlglot-c /sqlglot-c-noopt /sqlglot-c-base
